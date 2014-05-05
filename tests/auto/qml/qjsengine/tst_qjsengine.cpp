@@ -155,6 +155,8 @@ private slots:
 
     void prototypeChainGc();
 
+    void scopeOfEvaluate();
+
 signals:
     void testSignal();
 };
@@ -2811,7 +2813,90 @@ void tst_QJSEngine::prototypeChainGc()
     QVERIFY(proto.isObject());
 }
 
+void tst_QJSEngine::prototypeChainGc_QTBUG38299()
+{
+    QJSEngine engine;
+    engine.evaluate("var mapping = {"
+                    "'prop1': \"val1\",\n"
+                    "'prop2': \"val2\"\n"
+                    "}\n"
+                    "\n"
+                    "delete mapping.prop2\n"
+                    "delete mapping.prop1\n"
+                    "\n");
+    // Don't hang!
+    engine.collectGarbage();
+}
+
+void tst_QJSEngine::dynamicProperties()
+{
+    {
+        QJSEngine engine;
+        QObject *obj = new QObject;
+        QJSValue wrapper = engine.newQObject(obj);
+        wrapper.setProperty("someRandomProperty", 42);
+        QCOMPARE(wrapper.property("someRandomProperty").toInt(), 42);
+        QVERIFY(!qmlContext(obj));
+    }
+    {
+        QQmlEngine qmlEngine;
+        QQmlComponent component(&qmlEngine);
+        component.setData("import QtQml 2.0; QtObject { property QtObject subObject: QtObject {} }", QUrl());
+        QObject *root = component.create(0);
+        QVERIFY(root);
+        QVERIFY(qmlContext(root));
+
+        QJSValue wrapper = qmlEngine.newQObject(root);
+        wrapper.setProperty("someRandomProperty", 42);
+        QVERIFY(!wrapper.hasProperty("someRandomProperty"));
+
+        QObject *subObject = qvariant_cast<QObject*>(root->property("subObject"));
+        QVERIFY(subObject);
+        QVERIFY(qmlContext(subObject));
+
+        wrapper = qmlEngine.newQObject(subObject);
+        wrapper.setProperty("someRandomProperty", 42);
+        QVERIFY(!wrapper.hasProperty("someRandomProperty"));
+    }
+}
+
+class EvaluateWrapper : public QObject
+{
+    Q_OBJECT
+public:
+    EvaluateWrapper(QJSEngine *engine)
+        : engine(engine)
+    {}
+
+public slots:
+    QJSValue cppEvaluate(const QString &program)
+    {
+        return engine->evaluate(program);
+    }
+
+private:
+    QJSEngine *engine;
+};
+
+void tst_QJSEngine::scopeOfEvaluate()
+{
+    QJSEngine engine;
+    QJSValue wrapper = engine.newQObject(new EvaluateWrapper(&engine));
+
+    engine.evaluate("testVariable = 42");
+
+    QJSValue function = engine.evaluate("(function(evalWrapper){\n"
+                                        "var testVariable = 100; \n"
+                                        "try { \n"
+                                        "    return evalWrapper.cppEvaluate(\"(function() { return testVariable; })\")\n"
+                                        "           ()\n"
+                                        "} catch (e) {}\n"
+                                        "})");
+    QVERIFY(function.isCallable());
+    QJSValue result = function.call(QJSValueList() << wrapper);
+    QCOMPARE(result.toInt(), 42);
+}
+
 QTEST_MAIN(tst_QJSEngine)
 
 #include "tst_qjsengine.moc"
-
